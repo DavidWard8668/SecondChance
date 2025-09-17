@@ -1,0 +1,322 @@
+# Fastlane configuration for Second Chance Mobile App
+# Automated deployment to Google Play Store
+
+default_platform(:android)
+
+platform :android do
+  desc "Runs all the tests"
+  lane :test do
+    gradle(task: "test")
+  end
+
+  desc "Submit a new Internal Build to Play Store"
+  lane :internal do
+    gradle(
+      task: "clean assembleRelease bundleRelease",
+      properties: {
+        "android.injected.signing.store.file" => ENV["KEYSTORE_FILE"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV["KEY_ALIAS"],
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+      }
+    )
+    
+    upload_to_play_store(
+      track: 'internal',
+      release_status: 'draft',
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      mapping: "app/build/outputs/mapping/release/mapping.txt"
+    )
+    
+    # Send notification
+    notification(
+      title: "Second Chance - Internal Release",
+      message: "Successfully uploaded to Google Play Internal Testing"
+    )
+  end
+
+  desc "Deploy a new Beta version to the Google Play"
+  lane :beta do
+    # Ensure we're on a clean branch
+    ensure_git_status_clean
+    
+    # Build the app
+    gradle(
+      task: "clean assembleRelease bundleRelease",
+      properties: {
+        "android.injected.signing.store.file" => ENV["KEYSTORE_FILE"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV["KEY_ALIAS"],
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+      }
+    )
+    
+    # Run tests
+    gradle(task: "test")
+    
+    # Upload to Play Store Beta track
+    upload_to_play_store(
+      track: 'beta',
+      release_status: 'completed',
+      skip_upload_metadata: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      mapping: "app/build/outputs/mapping/release/mapping.txt"
+    )
+    
+    # Create git tag
+    version = get_version_name()
+    build = get_version_code()
+    add_git_tag(
+      tag: "v#{version}-beta-#{build}"
+    )
+    
+    push_git_tags
+    
+    # Send notification
+    notification(
+      title: "Second Chance - Beta Release",
+      message: "Version #{version} (#{build}) deployed to Beta track"
+    )
+  end
+
+  desc "Deploy a new version to the Google Play Production"
+  lane :production do
+    # Ensure we're on main/master branch
+    ensure_git_branch(
+      branch: '^(main|master)$'
+    )
+    
+    ensure_git_status_clean
+    
+    # Build the app
+    gradle(
+      task: "clean assembleRelease bundleRelease",
+      properties: {
+        "android.injected.signing.store.file" => ENV["KEYSTORE_FILE"],
+        "android.injected.signing.store.password" => ENV["KEYSTORE_PASSWORD"],
+        "android.injected.signing.key.alias" => ENV["KEY_ALIAS"],
+        "android.injected.signing.key.password" => ENV["KEY_PASSWORD"],
+      }
+    )
+    
+    # Run comprehensive tests
+    gradle(task: "test")
+    gradle(task: "connectedAndroidTest") if ENV["RUN_DEVICE_TESTS"] == "true"
+    
+    # Upload to Play Store Production track
+    upload_to_play_store(
+      track: 'production',
+      release_status: 'completed',
+      rollout: '0.1', # Start with 10% rollout
+      skip_upload_metadata: false,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      aab: "app/build/outputs/bundle/release/app-release.aab",
+      mapping: "app/build/outputs/mapping/release/mapping.txt"
+    )
+    
+    # Create git tag
+    version = get_version_name()
+    build = get_version_code()
+    add_git_tag(
+      tag: "v#{version}-release"
+    )
+    
+    push_git_tags
+    
+    # Send notification
+    notification(
+      title: "Second Chance - Production Release",
+      message: "Version #{version} (#{build}) deployed to Production with 10% rollout"
+    )
+    
+    # Trigger synthetic monitoring
+    sh("node ../../scripts/synthetic-monitoring.js start")
+  end
+
+  desc "Promote Internal to Beta"
+  lane :promote_to_beta do
+    upload_to_play_store(
+      track: 'internal',
+      track_promote_to: 'beta',
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+    
+    notification(
+      title: "Second Chance - Promoted to Beta",
+      message: "Internal build promoted to Beta track"
+    )
+  end
+
+  desc "Promote Beta to Production"
+  lane :promote_to_production do
+    upload_to_play_store(
+      track: 'beta',
+      track_promote_to: 'production',
+      rollout: '0.1', # Start with 10% rollout
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+    
+    notification(
+      title: "Second Chance - Promoted to Production",
+      message: "Beta build promoted to Production with 10% rollout"
+    )
+  end
+
+  desc "Increase Production rollout percentage"
+  lane :increase_rollout do |options|
+    percentage = options[:percentage] || "0.5"
+    
+    upload_to_play_store(
+      track: 'production',
+      rollout: percentage,
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+    
+    notification(
+      title: "Second Chance - Rollout Increased",
+      message: "Production rollout increased to #{(percentage.to_f * 100).to_i}%"
+    )
+  end
+
+  desc "Complete Production rollout to 100%"
+  lane :complete_rollout do
+    upload_to_play_store(
+      track: 'production',
+      rollout: '1.0',
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true
+    )
+    
+    notification(
+      title: "Second Chance - Rollout Complete",
+      message: "Production rollout completed to 100%"
+    )
+  end
+
+  desc "Run daily synthetic tests"
+  lane :synthetic_tests do
+    # Download latest production APK
+    download_from_play_store(
+      track: 'production',
+      metadata_path: './metadata'
+    )
+    
+    # Run synthetic tests
+    sh("node ../../scripts/synthetic-monitoring.js test")
+    
+    # Generate report
+    sh("node ../../scripts/synthetic-monitoring.js report")
+    
+    # Send notification with results
+    notification(
+      title: "Second Chance - Daily Synthetic Tests",
+      message: "Synthetic tests completed. Check reports for details."
+    )
+  end
+
+  desc "Check and fix common issues"
+  lane :doctor do
+    # Check environment
+    sh("echo 'Checking environment...'")
+    sh("java -version")
+    sh("node --version")
+    sh("npm --version")
+    
+    # Check Android SDK
+    sh("echo $ANDROID_HOME")
+    sh("ls -la $ANDROID_HOME/build-tools/")
+    
+    # Check signing configuration
+    if ENV["KEYSTORE_FILE"] && File.exist?(ENV["KEYSTORE_FILE"])
+      UI.success("Keystore file found")
+    else
+      UI.error("Keystore file not found or not configured")
+    end
+    
+    # Check Play Store credentials
+    if ENV["GOOGLE_PLAY_JSON_KEY"] && File.exist?(ENV["GOOGLE_PLAY_JSON_KEY"])
+      UI.success("Google Play credentials found")
+    else
+      UI.error("Google Play credentials not found or not configured")
+    end
+    
+    # Run gradle clean
+    gradle(task: "clean")
+    
+    UI.success("Environment check complete")
+  end
+
+  # Helper functions
+  def get_version_name
+    gradle_file = File.read("../app/build.gradle")
+    version_name = gradle_file.match(/versionName "(.+)"/)[1]
+    return version_name
+  end
+
+  def get_version_code
+    gradle_file = File.read("../app/build.gradle")
+    version_code = gradle_file.match(/versionCode (\d+)/)[1]
+    return version_code
+  end
+
+  # Error handling
+  error do |lane, exception|
+    notification(
+      title: "Second Chance - Deployment Failed",
+      message: "Lane #{lane} failed: #{exception.message}",
+      level: "error"
+    )
+    
+    # Create TODO for the failure
+    sh("node ../../scripts/todo-generator.js build-failure '#{lane}' '#{exception.message}'")
+    
+    # Send email notification
+    sh("node ../../scripts/email-notifications.js build-failure")
+  end
+
+  # Success handling
+  after_all do |lane|
+    notification(
+      title: "Second Chance - Success",
+      message: "Lane #{lane} completed successfully"
+    )
+    
+    # Clean up
+    gradle(task: "clean")
+  end
+
+  # Custom notification method
+  def notification(params)
+    if ENV["SLACK_URL"]
+      slack(
+        message: params[:message],
+        success: params[:level] != "error",
+        slack_url: ENV["SLACK_URL"]
+      )
+    end
+    
+    # Also log to console
+    if params[:level] == "error"
+      UI.error(params[:message])
+    else
+      UI.success(params[:message])
+    end
+  end
+end

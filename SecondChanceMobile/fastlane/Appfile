@@ -1,0 +1,10 @@
+# Fastlane Appfile for Second Chance
+
+# Package name
+package_name("com.secondchance.recovery")
+
+# Path to the json key file for Google Play
+json_key_file(ENV["GOOGLE_PLAY_JSON_KEY"] || "../../play-store-credentials.json")
+
+# Email address associated with the developer account
+issuer(ENV["GOOGLE_PLAY_ISSUER"] || "exiledev8668@gmail.com")

@@ -1,0 +1,333 @@
+name: Android Build and Release
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: 'Release type'
+        required: true
+        default: 'internal'
+        type: choice
+        options:
+          - internal
+          - alpha
+          - beta
+          - production
+
+env:
+  REACT_NATIVE_VERSION: '0.72.0'
+  NODE_VERSION: '18'
+  JAVA_VERSION: '11'
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cd SecondChanceMobile && npm ci
+
+      - name: Run unit tests
+        run: |
+          npm test
+          cd SecondChanceMobile && npm test
+
+      - name: Run lint
+        run: |
+          npm run lint
+          cd SecondChanceMobile && npm run lint || true
+
+      - name: Type check
+        run: |
+          npm run typecheck
+          cd SecondChanceMobile && npm run typecheck || true
+
+  build-android:
+    name: Build Android APK/AAB
+    runs-on: ubuntu-latest
+    needs: test
+    
+    outputs:
+      apk-path: ${{ steps.build.outputs.apk-path }}
+      aab-path: ${{ steps.build.outputs.aab-path }}
+      version-name: ${{ steps.version.outputs.version-name }}
+      version-code: ${{ steps.version.outputs.version-code }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Setup Java
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v2
+
+      - name: Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Install dependencies
+        working-directory: ./SecondChanceMobile
+        run: |
+          npm ci
+          cd android && ./gradlew clean
+
+      - name: Get version info
+        id: version
+        working-directory: ./SecondChanceMobile
+        run: |
+          VERSION_NAME=$(node -p "require('./package.json').version")
+          VERSION_CODE=$(date +%Y%m%d%H%M)
+          echo "version-name=$VERSION_NAME" >> $GITHUB_OUTPUT
+          echo "version-code=$VERSION_CODE" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION_NAME ($VERSION_CODE)"
+
+      - name: Setup keystore
+        if: github.event_name != 'pull_request'
+        working-directory: ./SecondChanceMobile/android
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > app/release.keystore
+            echo "MYAPP_RELEASE_STORE_FILE=release.keystore" >> gradle.properties
+            echo "MYAPP_RELEASE_STORE_PASSWORD=$KEYSTORE_PASSWORD" >> gradle.properties
+            echo "MYAPP_RELEASE_KEY_ALIAS=$KEY_ALIAS" >> gradle.properties
+            echo "MYAPP_RELEASE_KEY_PASSWORD=$KEY_PASSWORD" >> gradle.properties
+          fi
+
+      - name: Build APK (Debug)
+        if: github.event_name == 'pull_request'
+        working-directory: ./SecondChanceMobile/android
+        run: |
+          ./gradlew assembleDebug
+          echo "APK built successfully"
+
+      - name: Build APK and AAB (Release)
+        if: github.event_name != 'pull_request'
+        id: build
+        working-directory: ./SecondChanceMobile/android
+        run: |
+          ./gradlew assembleRelease
+          ./gradlew bundleRelease
+          
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -1)
+          AAB_PATH=$(find app/build/outputs/bundle/release -name "*.aab" | head -1)
+          
+          echo "apk-path=$APK_PATH" >> $GITHUB_OUTPUT
+          echo "aab-path=$AAB_PATH" >> $GITHUB_OUTPUT
+          
+          echo "APK: $APK_PATH"
+          echo "AAB: $AAB_PATH"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: app-release-apk
+          path: |
+            SecondChanceMobile/android/app/build/outputs/apk/**/*.apk
+          retention-days: 30
+
+      - name: Upload AAB artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v3
+        with:
+          name: app-release-aab
+          path: |
+            SecondChanceMobile/android/app/build/outputs/bundle/**/*.aab
+          retention-days: 30
+
+  synthetic-tests:
+    name: Run Synthetic User Tests
+    runs-on: ubuntu-latest
+    needs: build-android
+    if: github.event_name != 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Download APK
+        uses: actions/download-artifact@v3
+        with:
+          name: app-release-apk
+
+      - name: Run synthetic tests
+        run: |
+          echo "Running synthetic user tests..."
+          # TODO: Implement actual synthetic tests
+          # This would typically involve:
+          # - Setting up an emulator or device farm
+          # - Installing the APK
+          # - Running automated UI tests
+          # - Testing critical user flows (login, crisis button, etc.)
+          echo "Synthetic tests placeholder - implement with Detox or Appium"
+
+      - name: Generate TODO from failures
+        if: failure()
+        run: |
+          node scripts/todo-generator.js test
+
+  deploy-internal:
+    name: Deploy to Internal Testing
+    runs-on: ubuntu-latest
+    needs: [build-android, synthetic-tests]
+    if: |
+      github.event_name == 'push' && 
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Download AAB
+        uses: actions/download-artifact@v3
+        with:
+          name: app-release-aab
+
+      - name: Setup Google Play authentication
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "$GOOGLE_PLAY_SERVICE_ACCOUNT_JSON" > play-store-credentials.json
+          else
+            echo "Warning: Google Play credentials not configured"
+          fi
+
+      - name: Deploy to Google Play Internal Testing
+        if: env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON != ''
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJson: play-store-credentials.json
+          packageName: com.secondchance.recovery
+          releaseFiles: '**/*.aab'
+          track: internal
+          status: draft
+          mappingFile: SecondChanceMobile/android/app/build/outputs/mapping/release/mapping.txt
+
+      - name: Send notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" == "success" ]; then
+            echo "Deployment successful - sending notification"
+            node scripts/email-notifications.js build-success
+          else
+            echo "Deployment failed - sending alert"
+            node scripts/email-notifications.js build-failure
+          fi
+
+  security-scan:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: build-android
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Run security audit
+        run: |
+          npm audit --audit-level=moderate || true
+          cd SecondChanceMobile && npm audit --audit-level=moderate || true
+
+      - name: Check for exposed secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.repository.default_branch }}
+          head: HEAD
+
+      - name: SAST Scan
+        uses: AppThreat/sast-scan-action@master
+        with:
+          type: "android,nodejs"
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: security-scan-results
+          path: reports
+
+  notify-completion:
+    name: Send Completion Notification
+    runs-on: ubuntu-latest
+    needs: [test, build-android, synthetic-tests, deploy-internal, security-scan]
+    if: always()
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Send build summary
+        env:
+          BUILD_STATUS: ${{ needs.build-android.result }}
+          TEST_STATUS: ${{ needs.test.result }}
+          DEPLOY_STATUS: ${{ needs.deploy-internal.result }}
+          SECURITY_STATUS: ${{ needs.security-scan.result }}
+        run: |
+          echo "Build Summary:"
+          echo "- Tests: $TEST_STATUS"
+          echo "- Build: $BUILD_STATUS"
+          echo "- Deploy: $DEPLOY_STATUS"
+          echo "- Security: $SECURITY_STATUS"
+          
+          # Send email notification
+          node -e "
+          const status = {
+            tests: '$TEST_STATUS',
+            build: '$BUILD_STATUS',
+            deploy: '$DEPLOY_STATUS',
+            security: '$SECURITY_STATUS'
+          };
+          console.log('Build pipeline completed');
+          // TODO: Integrate with email-notifications.js
+          "
