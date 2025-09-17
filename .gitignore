@@ -104,3 +104,20 @@ temp/
 *.njsproj
 *.sln
 *.sw?
+# CRITICAL - Credentials and secrets
+credentials/*
+!credentials/.gitignore
+!credentials/README.md
+*.keystore
+*.jks
+play-store-key.json
+firebase-admin.json
+service-account.json
+android-keys/
+
+# Test artifacts
+test-screenshots/
+synthetic-test-reports/
+bug-reports/
+todos/
+EMERGENCY-*.log
